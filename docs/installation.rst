@@ -4,9 +4,9 @@
 Installation
 ============
 
-* To install django-user-accounts (no releases have been yet)::
+* Install the development version::
 
-    pip install django-user-accounts
+    pip install --extra-index-url=http://dist.pinaxproject.com/dev/ django-user-accounts
 
 * Add ``account`` to your ``INSTALLED_APPS`` setting::
 
@@ -54,3 +54,11 @@ We use django-appconf for app settings. It is listed in ``install_requires``
 and will be installed when pip installs.
 
 .. _django-appconf: https://github.com/jezdez/django-appconf
+
+pytz_
+-----
+
+pytz is used for handling timezones for accounts. This dependency is critical
+due to its extensive dataset for timezones.
+
+.. _pytz: http://pypi.python.org/pypi/pytz/

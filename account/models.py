@@ -7,13 +7,14 @@ from django.core.urlresolvers import reverse
 from django.db import models
 from django.db.models import Q
 from django.db.models.signals import post_save
-from django.dispatch import receiver
 from django.template.loader import render_to_string
-from django.utils import timezone
-from django.utils.translation import get_language_from_request, gettext_lazy as _
+from django.utils import timezone, translation
+from django.utils.translation import gettext_lazy as _
 
 from django.contrib.auth.models import User, AnonymousUser
 from django.contrib.sites.models import Site
+
+import pytz
 
 from account import signals
 from account.conf import settings
@@ -26,12 +27,11 @@ from account.utils import random_token
 class Account(models.Model):
     
     user = models.OneToOneField(User, related_name="account", verbose_name=_("user"))
-    
     timezone = TimeZoneField(_("timezone"))
     language = models.CharField(_("language"),
-        max_length = 10,
-        choices = settings.ACCOUNT_LANGUAGES,
-        default = settings.LANGUAGE_CODE
+        max_length=10,
+        choices=settings.ACCOUNT_LANGUAGES,
+        default=settings.LANGUAGE_CODE
     )
     
     @classmethod
@@ -45,8 +45,27 @@ class Account(models.Model):
             account = AnonymousAccount(request)
         return account
     
+    @classmethod
+    def create(cls, request=None, **kwargs):
+        account = cls(**kwargs)
+        if "language" not in kwargs:
+            if request is None:
+                account.language = settings.LANGUAGE_CODE
+            else:
+                account.language = translation.get_language_from_request(request, check_path=True)
+        account.save()
+        return account
+    
     def __unicode__(self):
         return self.user.username
+    
+    def now(self):
+        """
+        Returns a timezone aware datetime localized to the account's timezone.
+        """
+        naive = datetime.datetime.now()
+        aware = naive.replace(tzinfo=pytz.timezone(settings.TIME_ZONE))
+        return aware.astimezone(pytz.timezone(self.timezone))
 
 
 class AnonymousAccount(object):
@@ -54,10 +73,10 @@ class AnonymousAccount(object):
     def __init__(self, request=None):
         self.user = AnonymousUser()
         self.timezone = settings.TIME_ZONE
-        if request is not None:
-            self.language = get_language_from_request(request)
-        else:
+        if request is None:
             self.language = settings.LANGUAGE_CODE
+        else:
+            self.language = translation.get_language_from_request(request, check_path=True)
     
     def __unicode__(self):
         return "AnonymousAccount"
@@ -144,9 +163,9 @@ class SignupCode(models.Model):
         result.save()
         signup_code_used.send(sender=result.__class__, signup_code_result=result)
     
-    def send(self):
+    def send(self, **kwargs):
         protocol = getattr(settings, "DEFAULT_HTTP_PROTOCOL", "http")
-        current_site = Site.objects.get_current()
+        current_site = kwargs["site"] if "site" in kwargs else Site.objects.get_current()
         signup_url = u"%s://%s%s?%s" % (
             protocol,
             unicode(current_site.domain),
@@ -249,8 +268,8 @@ class EmailConfirmation(models.Model):
             signals.email_confirmed.send(sender=self.__class__, email_address=email_address)
             return email_address
     
-    def send(self):
-        current_site = Site.objects.get_current()
+    def send(self, **kwargs):
+        current_site = kwargs["site"] if "site" in kwargs else Site.objects.get_current()
         protocol = getattr(settings, "DEFAULT_HTTP_PROTOCOL", "http")
         activate_url = u"%s://%s%s" % (
             protocol,
@@ -270,9 +289,3 @@ class EmailConfirmation(models.Model):
         self.sent = timezone.now()
         self.save()
         signals.email_confirmation_sent.send(sender=self.__class__, confirmation=self)
-
-
-@receiver(post_save, sender=User)
-def create_account(sender, **kwargs):
-    if kwargs["created"]:
-        Account.objects.create(user=kwargs["instance"])

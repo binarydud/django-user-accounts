@@ -21,11 +21,11 @@ class SignupForm(forms.Form):
         widget=forms.TextInput(),
         required=True
     )
-    password1 = forms.CharField(
+    password = forms.CharField(
         label=_("Password"),
         widget=forms.PasswordInput(render_value=False)
     )
-    password2 = forms.CharField(
+    password_confirm = forms.CharField(
         label=_("Password (again)"),
         widget=forms.PasswordInput(render_value=False)
     )
@@ -52,8 +52,8 @@ class SignupForm(forms.Form):
         raise forms.ValidationError(_("A user is registered with this email address."))
     
     def clean(self):
-        if "password1" in self.cleaned_data and "password2" in self.cleaned_data:
-            if self.cleaned_data["password1"] != self.cleaned_data["password2"]:
+        if "password" in self.cleaned_data and "password_confirm" in self.cleaned_data:
+            if self.cleaned_data["password"] != self.cleaned_data["password_confirm"]:
                 raise forms.ValidationError(_("You must type the same password each time."))
         return self.cleaned_data
 
@@ -121,15 +121,15 @@ class LoginEmailForm(LoginForm):
 
 class ChangePasswordForm(forms.Form):
     
-    oldpassword = forms.CharField(
+    password_current = forms.CharField(
         label=_("Current Password"),
         widget=forms.PasswordInput(render_value=False)
     )
-    password1 = forms.CharField(
+    password_new = forms.CharField(
         label=_("New Password"),
         widget=forms.PasswordInput(render_value=False)
     )
-    password2 = forms.CharField(
+    password_new_confirm = forms.CharField(
         label=_("New Password (again)"),
         widget=forms.PasswordInput(render_value=False)
     )
@@ -138,19 +138,19 @@ class ChangePasswordForm(forms.Form):
         self.user = kwargs.pop("user")
         super(ChangePasswordForm, self).__init__(*args, **kwargs)
     
-    def clean_oldpassword(self):
-        if not self.user.check_password(self.cleaned_data.get("oldpassword")):
+    def clean_password_current(self):
+        if not self.user.check_password(self.cleaned_data.get("password_current")):
             raise forms.ValidationError(_("Please type your current password."))
-        return self.cleaned_data["oldpassword"]
+        return self.cleaned_data["password_current"]
     
-    def clean_password2(self):
-        if "password1" in self.cleaned_data and "password2" in self.cleaned_data:
-            if self.cleaned_data["password1"] != self.cleaned_data["password2"]:
+    def clean_password_new_confirm(self):
+        if "password_new" in self.cleaned_data and "password_new_confirm" in self.cleaned_data:
+            if self.cleaned_data["password_new"] != self.cleaned_data["password_new_confirm"]:
                 raise forms.ValidationError(_("You must type the same password each time."))
-        return self.cleaned_data["password2"]
+        return self.cleaned_data["password_new_confirm"]
     
     def save(self, user):
-        user.set_password(self.cleaned_data["password1"])
+        user.set_password(self.cleaned_data["password_new"])
         user.save()
 
 
@@ -170,20 +170,20 @@ class PasswordResetForm(forms.Form):
 
 class PasswordResetTokenForm(forms.Form):
     
-    password1 = forms.CharField(
+    password = forms.CharField(
         label = _("New Password"),
         widget = forms.PasswordInput(render_value=False)
     )
-    password2 = forms.CharField(
+    password_confirm = forms.CharField(
         label = _("New Password (again)"),
         widget = forms.PasswordInput(render_value=False)
     )
     
-    def clean_password2(self):
-        if "password1" in self.cleaned_data and "password2" in self.cleaned_data:
-            if self.cleaned_data["password1"] != self.cleaned_data["password2"]:
+    def clean_password_confirm(self):
+        if "password" in self.cleaned_data and "password_confirm" in self.cleaned_data:
+            if self.cleaned_data["password"] != self.cleaned_data["password_confirm"]:
                 raise forms.ValidationError(_("You must type the same password each time."))
-        return self.cleaned_data["password2"]
+        return self.cleaned_data["password_confirm"]
 
 
 class SettingsForm(forms.Form):
@@ -191,17 +191,20 @@ class SettingsForm(forms.Form):
     email = forms.EmailField(label=_("Email"), required=True)
     timezone = forms.ChoiceField(
         label=_("Timezone"),
-        choices=settings.ACCOUNT_TIMEZONE_CHOICES,
+        choices=settings.ACCOUNT_TIMEZONES,
         required=False
     )
-    language = forms.ChoiceField(
-        label=_("Language"),
-        choices=settings.ACCOUNT_LANGUAGES,
-        required=False
-    )
+    if settings.USE_I18N:
+        language = forms.ChoiceField(
+            label=_("Language"),
+            choices=settings.ACCOUNT_LANGUAGES,
+            required=False
+        )
     
     def clean_email(self):
         value = self.cleaned_data["email"]
+        if self.initial.get("email") == value:
+            return value
         qs = EmailAddress.objects.filter(email__iexact=value)
         if not qs.exists() or not settings.ACCOUNT_EMAIL_UNIQUE:
             return value

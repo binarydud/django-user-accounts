@@ -5,7 +5,7 @@ from django.utils.http import base36_to_int, int_to_base36
 from django.template.loader import render_to_string
 from django.core.urlresolvers import reverse
 from django.utils.translation import ugettext_lazy as _
-from django.views.generic.base import TemplateResponseMixin, View, TemplateView
+from django.views.generic.base import TemplateResponseMixin, View
 from django.views.generic.edit import FormView
 
 from django.contrib import auth, messages
@@ -33,15 +33,15 @@ class SignupView(FormView):
     messages = {
         "email_confirmation_sent": {
             "level": messages.INFO,
-            "text": _("Confirmation email sent to %(email)s")
+            "text": _("Confirmation email sent to %(email)s.")
         },
         "logged_in": {
             "level": messages.SUCCESS,
-            "text": _("Successfully logged in as %(user)s")
+            "text": _("Successfully logged in as %(user)s.")
         },
         "invalid_signup_code": {
             "level": messages.WARNING,
-            "text": _("The code %(code)s is invalid")
+            "text": _("The code %(code)s is invalid.")
         }
     }
     
@@ -56,10 +56,17 @@ class SignupView(FormView):
             return self.closed()
         return super(SignupView, self).get(*args, **kwargs)
     
+    def post(self, *args, **kwargs):
+        if not self.is_open():
+            return self.closed()
+        return super(SignupView, self).post(*args, **kwargs)
+    
     def get_initial(self):
         initial = super(SignupView, self).get_initial()
         if self.signup_code:
             initial["code"] = self.signup_code.code
+            if self.signup_code.email:
+                initial["email"] = self.signup_code.email
         return initial
     
     def get_context_data(self, **kwargs):
@@ -86,20 +93,21 @@ class SignupView(FormView):
         if settings.ACCOUNT_EMAIL_CONFIRMATION_REQUIRED:
             new_user.is_active = False
         new_user.save()
+        self.create_account(new_user, form)
         email_kwargs = {"primary": True}
         if self.signup_code:
             self.signup_code.use(new_user)
-            if self.signup_code.email and form.cleaned_data["email"] == self.signup_code.email:
+            if self.signup_code.email and new_user.email == self.signup_code.email:
                 email_kwargs["verified"] = True
                 email_confirmed = True
-        EmailAddress.objects.add_email(new_user, form.cleaned_data["email"], **email_kwargs)
+        EmailAddress.objects.add_email(new_user, new_user.email, **email_kwargs)
         self.after_signup(new_user, form)
         if settings.ACCOUNT_EMAIL_CONFIRMATION_REQUIRED and not email_confirmed:
             response_kwargs = {
                 "request": self.request,
                 "template": self.template_name_email_confirmation_sent,
                 "context": {
-                    "email": form.cleaned_data["email"],
+                    "email": new_user.email,
                     "success_url": self.get_success_url(),
                 }
             }
@@ -122,7 +130,7 @@ class SignupView(FormView):
                         "user": user_display(new_user)
                     }
                 )
-        return super(SignupView, self).form_valid(form)
+        return redirect(self.get_success_url())
     
     def get_success_url(self):
         return default_redirect(self.request, settings.ACCOUNT_SIGNUP_REDIRECT_URL)
@@ -136,8 +144,8 @@ class SignupView(FormView):
         if username is None:
             username = self.generate_username(form)
         user.username = username
-        user.email = form.cleaned_data["email"].strip().lower()
-        password = form.cleaned_data.get("password1")
+        user.email = form.cleaned_data["email"].strip()
+        password = form.cleaned_data.get("password")
         if password:
             user.set_password(password)
         else:
@@ -146,12 +154,15 @@ class SignupView(FormView):
             user.save()
         return user
     
+    def create_account(self, new_user, form):
+        return Account.create(request=self.request, user=new_user)
+    
     def generate_username(self, form):
         raise NotImplementedError("Unable to generate username by default. "
             "Override SignupView.generate_username in a subclass.")
     
     def after_signup(self, user, form):
-        signals.user_signed_up.send(sender=SignupForm, user=user)
+        signals.user_signed_up.send(sender=SignupForm, user=user, form=form)
     
     def login_user(self, user):
         # set backend on User object to bypass needing to call auth.authenticate
@@ -222,9 +233,8 @@ class LoginView(FormView):
     
     def login_user(self, form):
         auth.login(self.request, form.user)
-        self.request.session.set_expiry(
-            60*60*24*365*10 if form.cleaned_data.get("remember") else 0
-        )
+        expiry = settings.ACCOUNT_REMEMBER_ME_EXPIRY if form.cleaned_data.get("remember") else 0
+        self.request.session.set_expiry(expiry)
 
 
 class LogoutView(TemplateResponseMixin, View):
@@ -254,7 +264,7 @@ class ConfirmEmailView(TemplateResponseMixin, View):
     messages = {
         "email_confirmed": {
             "level": messages.SUCCESS,
-            "text": _("You have confirmed %(email)s")
+            "text": _("You have confirmed %(email)s.")
         }
     }
     
@@ -273,8 +283,6 @@ class ConfirmEmailView(TemplateResponseMixin, View):
     
     def post(self, *args, **kwargs):
         self.object = confirmation = self.get_object()
-        if confirmation.email_address.user != self.request.user:
-            raise Http404()
         confirmation.confirm()
         user = confirmation.email_address.user
         user.is_active = True
@@ -450,7 +458,7 @@ class PasswordResetTokenView(FormView):
     
     def form_valid(self, form):
         user = self.get_user()
-        user.set_password(form.cleaned_data["password1"])
+        user.set_password(form.cleaned_data["password"])
         user.save()
         if self.messages.get("password_changed"):
             messages.add_message(
@@ -504,24 +512,12 @@ class SettingsView(LoginRequiredMixin, FormView):
         initial = super(SettingsView, self).get_initial()
         if self.primary_email_address:
             initial["email"] = self.primary_email_address.email
-            initial["timezone"] = self.request.user.account.timezone
-            initial["language"] = self.request.user.account.language
+        initial["timezone"] = self.request.user.account.timezone
+        initial["language"] = self.request.user.account.language
         return initial
     
     def form_valid(self, form):
-        # @@@ handle multiple emails per user
-        if not self.primary_email_address:
-            EmailAddress.objects.add_email(self.request.user, form.cleaned_data["email"], primary=True)
-        else:
-            if form.cleaned_data["email"] != self.primary_email_address.email:
-                email_address = EmailAddress.objects.add_email(self.request.user, form.cleaned_data["email"])
-                email_address.set_as_primary()
-        
-        account = self.request.user.account
-        account.timezone = form.cleaned_data["timezone"]
-        account.language = form.cleaned_data["language"]
-        account.save()
-        
+        self.update_settings(form)
         if self.messages.get("settings_updated"):
             messages.add_message(
                 self.request,
@@ -530,5 +526,38 @@ class SettingsView(LoginRequiredMixin, FormView):
             )
         return redirect(self.get_success_url())
     
-    def get_success_url(self):
-        return default_redirect(self.request, settings.ACCOUNT_SETTINGS_REDIRECT_URL)
+    def update_settings(self, form):
+        self.update_email(form)
+        self.update_account(form)
+    
+    def update_email(self, form):
+        user = self.request.user
+        # @@@ handle multiple emails per user
+        email = form.cleaned_data["email"].strip()
+        if not self.primary_email_address:
+            user.email = email
+            EmailAddress.objects.add_email(self.request.user, email, primary=True)
+            user.save()
+        else:
+            if email != self.primary_email_address.email:
+                user.email = email
+                self.primary_email_address.email = email
+                user.save()
+                self.primary_email_address.save()
+    
+    def update_account(self, form):
+        fields = {}
+        if "timezone" in form.cleaned_data:
+            fields["timezone"] = form.cleaned_data["timezone"]
+        if "language" in form.cleaned_data:
+            fields["language"] = form.cleaned_data["language"]
+        if fields:
+            account = self.request.user.account
+            for k, v in fields.iteritems():
+                setattr(account, k, v)
+            account.save()
+    
+    def get_success_url(self, fallback_url=None):
+        if fallback_url is None:
+            fallback_url = settings.ACCOUNT_SETTINGS_REDIRECT_URL
+        return default_redirect(self.request, fallback_url)
